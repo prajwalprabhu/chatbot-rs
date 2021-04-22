@@ -5,7 +5,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{self, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::thread::JoinHandle;
+// use std::thread::JoinHandle;
 // use serde_json::Result;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -43,13 +43,20 @@ impl ChatBot {
         // let chann = self.channel_rx.clone();
         let member = Arc::clone(&self.members);
         let stream = Arc::clone(&self.stream);
-        thread::spawn(|| recv(channel_rx,member,stream));
+        let start_thread =
+            thread::spawn(|| recv(channel_rx, member, stream).expect("start thread said"));
+
         for stream in listener.incoming() {
-            self.add(stream?,channel_tx.clone())?;
+            self.add(stream?, channel_tx.clone())?;
         }
+        start_thread.join().expect("start thread join");
         Ok(())
     }
-    fn add(&mut self, mut stream: TcpStream,channel_tx: mpsc::Sender<Message>) -> std::io::Result<()> {
+    fn add(
+        &mut self,
+        mut stream: TcpStream,
+        channel_tx: mpsc::Sender<Message>,
+    ) -> std::io::Result<()> {
         let message = serde_json::to_string(&Message {
             member: "root".to_string(),
             chat: "Welcome".to_string(),
@@ -72,11 +79,14 @@ impl ChatBot {
         let mut stream_vec = self.stream.lock().unwrap();
         stream_vec.push(stream.try_clone()?);
         // self.stream.
+        println!("stream {:?}", stream_vec);
+        Mutex::unlock(stream_vec);
         let mut members_vec = self.members.lock().unwrap();
-
         members_vec.push(result.member);
+        println!("member {:?}", members_vec);
+        Mutex::unlock(members_vec);
         let channel = channel_tx.clone();
-        thread::spawn(move || listen(stream, channel));
+        thread::spawn(move || listen(stream, channel).expect("listen failed "));
 
         Ok(())
     }
@@ -117,18 +127,24 @@ fn recv(
         let result: Message = channel.recv().unwrap();
         let mut members = members.lock().unwrap();
         let mut stream = stream.lock().unwrap();
-        println!("Result recv channel{:?}",result );
+        println!("Result recv channel{:?}", result);
+        // println!("member {:?}",members);
+        // println!("stream {:?}",stream);
         // let result: Message = serde_json::from_str(&String::from_utf8_lossy(&buffer)).unwrap();
+
         for i in 0..members.len() {
-            if members[i] == result.member {
-                continue;
-            } else {
-                let message = serde_json::to_string(&result)?;
-                let mut str = stream[i].try_clone()?;
-                str.write(message.as_bytes())?;
-                str.flush()?;
+            // println!("Member {:?} ",members[i]);
+            println!("for");
+            let message = serde_json::to_string(&result).expect("message ");
+            println!("Message : {:?} to {:?}", message, members[i]);
+            // let mut str = stream[i].try_clone()?;
+            if stream[i].write(message.as_bytes()).is_err(){
+                stream.remove(i);
+                members.remove(i);
             }
-            break;
+            stream[i].flush()?;
+            // }
+            // break;
         }
         Mutex::unlock(members);
         Mutex::unlock(stream);
@@ -141,7 +157,7 @@ fn listen(mut stream: TcpStream, channel: mpsc::Sender<Message>) -> std::io::Res
     loop {
         let mut buff = [0; 1024];
         stream.read(&mut buff)?;
-        if buff[0]==0{
+        if buff[0] == 0 {
             continue;
         }
         let mut buffer: Vec<u8> = Vec::new();
